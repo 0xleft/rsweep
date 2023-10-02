@@ -20,6 +20,9 @@ struct Args {
 
     #[arg(short, long, default_value = "false")]
     verbose: bool,
+
+    #[arg(long, default_value = "3")]
+    timeout: u32,
 }
 
 #[tokio::main]
@@ -33,6 +36,7 @@ async fn main() {
     let sweeper = Sweeper::new(
         args.range,
         args.ports,
+        args.timeout,
         args.threads,
         args.verbose,
     );

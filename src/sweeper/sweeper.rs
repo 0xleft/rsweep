@@ -1,9 +1,7 @@
 use std::{net::{TcpStream, Ipv4Addr}, collections::{HashMap, binary_heap::Iter}, hash::Hash, sync::atomic::AtomicUsize, future::Future};
-use clap::builder::NonEmptyStringValueParser;
 use tokio;
 use std::sync::{Arc, Mutex};
 
-use std::pin::Pin;
 // import from range.rs
 use super::range::IpRangeIterator;
 
@@ -21,6 +19,7 @@ A simple port scanner written in Rust
 pub struct Sweeper {
     range: String,
     ports: Vec<u32>,
+    timeout: u32,
     threads: u32,
     verbose: bool,
 }
@@ -29,6 +28,7 @@ impl Sweeper {
     pub fn new(
         range: String,
         ports: String,
+        timeout: u32,
         threads: u32,
         verbose: bool,
     ) -> Self {
@@ -44,6 +44,7 @@ impl Sweeper {
         Self {
             range,
             ports,
+            timeout,
             threads,
             verbose,
         }
@@ -61,8 +62,6 @@ impl Sweeper {
             let start = range.next().unwrap().parse::<Ipv4Addr>().unwrap();
             let end = range.next().unwrap().parse::<Ipv4Addr>().unwrap();
 
-            let mut tasks = Vec::new();
-
             for ip in IpRangeIterator::new(start, end) {
                 let _ip = ip.to_string();
 
@@ -70,22 +69,22 @@ impl Sweeper {
                 let _threads = self.threads.clone();
                 let _verbose = self.verbose.clone();
 
-                let last_task = scan_host(_ip, _ports, _threads, global_threads.clone());
+                let last_task = scan_host(_ip, _ports, _threads, self.timeout.clone(), global_threads.clone());
 
-                let waiting_thread = tokio::spawn(async move {
+                tokio::spawn(async move {
                     last_task.await;
                 });
-
-                tasks.push(waiting_thread);
             }
 
-            for task in tasks {
-                task.await.unwrap();
+            loop {
+                if global_threads.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    break;
+                }
             }
         } else {
             let _ip = self.range.clone();
             println!("\nScanning {}", _ip);
-            let _ = scan_host(_ip, self.ports.clone(), self.threads.clone(), global_threads).await;
+            let _ = scan_host(_ip, self.ports.clone(), self.threads.clone(), self.timeout.clone(), global_threads).await;
         }
 
         if self.verbose {
@@ -94,13 +93,12 @@ impl Sweeper {
     }
 }
 
-async fn scan_host(host: String, ports: Vec<u32>, threads: u32, global_threads: Arc<AtomicUsize>) {
+async fn scan_host(host: String, ports: Vec<u32>, threads: u32, timeout: u32, global_threads: Arc<AtomicUsize>) {
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let ports: Vec<u32> = ports.clone();
 
     for port in ports {
         let _host = host.clone();
-
         if tasks.len() >= threads as usize || global_threads.load(std::sync::atomic::Ordering::SeqCst) >= threads as usize {
             if tasks.len() == 0 {
                 continue;
@@ -109,14 +107,24 @@ async fn scan_host(host: String, ports: Vec<u32>, threads: u32, global_threads: 
             let task = tasks.remove(0);
             task.await.unwrap();
         }
+        
 
         let _global_threads = global_threads.clone();
-
         _global_threads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
         let task = tokio::spawn(async move {
-            if tokio::net::TcpStream::connect(format!("{}:{}", _host, port)).await.is_ok() {
-                println!("Open: {} {}", _host, port);
-            } else {
+            let res: Result<Result<tokio::net::TcpStream, std::io::Error>, tokio::time::error::Elapsed> = tokio::time::timeout(
+                std::time::Duration::from_secs(timeout as u64),
+                tokio::net::TcpStream::connect(format!("{}:{}", _host, port))
+            ).await;
+
+            match res {
+                Ok(Ok(_)) => {
+                    println!("{}:{} is open", _host, port);
+                },
+                Ok(Err(err)) => {
+                },
+                Err(_) => {},
             }
 
             _global_threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
