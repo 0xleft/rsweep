@@ -50,7 +50,7 @@ impl Sweeper {
 
     pub async fn run(&self) {
         if self.verbose {
-            println!("Sweeper::run()");
+            println!("{}", BANNER);
         }
 
         if self.range.contains("-") {
@@ -60,7 +60,7 @@ impl Sweeper {
 
             for ip in IpRangeIterator::new(start, end) {
                 let _ip = ip.to_string();
-                println!("Scanning {}", _ip);
+                println!("\nScanning {}", _ip);
 
                 let _ports = self.ports.clone();
                 let _threads = self.threads.clone();
@@ -70,12 +70,12 @@ impl Sweeper {
             }
         } else {
             let _ip = self.range.clone();
-            println!("Scanning {}", _ip);
+            println!("\nScanning {}", _ip);
             let _ = scan_host(_ip, self.ports.clone(), self.threads.clone()).await;
         }
 
         if self.verbose {
-            println!("Sweeper::run() -> done");
+            println!("Done!");
         }
     }
 }
@@ -96,7 +96,7 @@ async fn scan_host(host: String, ports: Vec<u32>, threads: u32) {
 
         let task = tokio::spawn(async move {
             if tokio::net::TcpStream::connect(format!("{}:{}", _host, port)).await.is_ok() {
-                println!("Alive: {}:{}", _host, port);
+                println!("Open: {} {}", _host, port);
             } else {
             }
         });
