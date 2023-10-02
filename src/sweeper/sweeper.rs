@@ -1,4 +1,5 @@
-use std::{net::{TcpStream, Ipv4Addr}, collections::{HashMap, binary_heap::Iter}, hash::Hash};
+use std::{net::{TcpStream, Ipv4Addr}, collections::{HashMap, binary_heap::Iter}, hash::Hash, sync::atomic::AtomicUsize, future::Future};
+use clap::builder::NonEmptyStringValueParser;
 use tokio;
 use std::sync::{Arc, Mutex};
 
@@ -53,25 +54,38 @@ impl Sweeper {
             println!("{}", BANNER);
         }
 
+        let global_threads = Arc::new(AtomicUsize::new(0));
+
         if self.range.contains("-") {
-            let mut range = self.range.split("-");
+            let mut range: std::str::Split<'_, &str> = self.range.split("-");
             let start = range.next().unwrap().parse::<Ipv4Addr>().unwrap();
             let end = range.next().unwrap().parse::<Ipv4Addr>().unwrap();
 
+            let mut tasks = Vec::new();
+
             for ip in IpRangeIterator::new(start, end) {
                 let _ip = ip.to_string();
-                println!("\nScanning {}", _ip);
 
                 let _ports = self.ports.clone();
                 let _threads = self.threads.clone();
                 let _verbose = self.verbose.clone();
 
-                let _ = scan_host(_ip, _ports, _threads).await;
+                let last_task = scan_host(_ip, _ports, _threads, global_threads.clone());
+
+                let waiting_thread = tokio::spawn(async move {
+                    last_task.await;
+                });
+
+                tasks.push(waiting_thread);
+            }
+
+            for task in tasks {
+                task.await.unwrap();
             }
         } else {
             let _ip = self.range.clone();
             println!("\nScanning {}", _ip);
-            let _ = scan_host(_ip, self.ports.clone(), self.threads.clone()).await;
+            let _ = scan_host(_ip, self.ports.clone(), self.threads.clone(), global_threads).await;
         }
 
         if self.verbose {
@@ -80,25 +94,32 @@ impl Sweeper {
     }
 }
 
-async fn scan_host(host: String, ports: Vec<u32>, threads: u32) {
+async fn scan_host(host: String, ports: Vec<u32>, threads: u32, global_threads: Arc<AtomicUsize>) {
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let ports: Vec<u32> = ports.clone();
-
-    println!("Scanning {} ports", ports.len());
 
     for port in ports {
         let _host = host.clone();
 
-        if tasks.len() >= threads as usize {
+        if tasks.len() >= threads as usize || global_threads.load(std::sync::atomic::Ordering::SeqCst) >= threads as usize {
+            if tasks.len() == 0 {
+                continue;
+            }
+
             let task = tasks.remove(0);
             task.await.unwrap();
         }
 
+        let _global_threads = global_threads.clone();
+
+        _global_threads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let task = tokio::spawn(async move {
             if tokio::net::TcpStream::connect(format!("{}:{}", _host, port)).await.is_ok() {
                 println!("Open: {} {}", _host, port);
             } else {
             }
+
+            _global_threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         });
 
         tasks.push(task);
